@@ -1,0 +1,526 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from io import BytesIO
+
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import streamlit as st
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from openpyxl import load_workbook
+@dataclass
+class ParsedTable:
+    data: pd.DataFrame
+    metrics: list[str]
+
+
+def normalize_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def read_merged_value(sheet, row: int, col: int) -> object:
+    cell = sheet.cell(row=row, column=col)
+    if cell.value is not None:
+        return cell.value
+
+    for merged_range in sheet.merged_cells.ranges:
+        if (
+            merged_range.min_row <= row <= merged_range.max_row
+            and merged_range.min_col <= col <= merged_range.max_col
+        ):
+            return sheet.cell(merged_range.min_row, merged_range.min_col).value
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def parse_workbook(file_bytes: bytes) -> ParsedTable:
+    workbook = load_workbook(BytesIO(file_bytes), data_only=True)
+    sheet = workbook[workbook.sheetnames[0]]
+
+    metric_columns: list[tuple[str, int, int]] = []
+    for col in range(3, sheet.max_column + 1, 2):
+        metric_name = normalize_text(read_merged_value(sheet, 1, col))
+        if not metric_name:
+            continue
+        metric_columns.append((metric_name, col, col + 1))
+
+    rows: list[dict[str, object]] = []
+    current_group: str | None = None
+
+    for row in range(3, sheet.max_row + 1):
+        group = normalize_text(read_merged_value(sheet, row, 1))
+        drug = normalize_text(sheet.cell(row=row, column=2).value)
+
+        if group:
+            current_group = group
+        if not drug:
+            continue
+
+        record: dict[str, object] = {
+            "group": current_group or "Uncategorized",
+            "drug": drug,
+        }
+
+        has_any_value = False
+        for metric_name, fc_col, p_col in metric_columns:
+            fc_value = sheet.cell(row=row, column=fc_col).value
+            p_value = sheet.cell(row=row, column=p_col).value
+
+            fc_numeric = pd.to_numeric(fc_value, errors="coerce")
+            p_numeric = pd.to_numeric(p_value, errors="coerce")
+
+            record[f"{metric_name}__log2fc"] = fc_numeric
+            record[f"{metric_name}__pvalue"] = p_numeric
+            has_any_value = has_any_value or pd.notna(fc_numeric)
+
+        if has_any_value:
+            rows.append(record)
+
+    data = pd.DataFrame(rows)
+    workbook.close()
+    return ParsedTable(data=data, metrics=[name for name, _, _ in metric_columns])
+
+
+def build_heatmap_frame(
+    data: pd.DataFrame,
+    selected_groups: list[str],
+    selected_metrics: list[str],
+    pvalue_threshold: float,
+    significant_only: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    filtered = data[data["group"].isin(selected_groups)].reset_index(drop=True).copy()
+
+    if filtered.empty:
+        return filtered, pd.DataFrame(), pd.DataFrame()
+
+    value_frame = pd.DataFrame(
+        {metric: filtered[f"{metric}__log2fc"].to_numpy() for metric in selected_metrics}
+    )
+    pvalue_frame = pd.DataFrame(
+        {metric: filtered[f"{metric}__pvalue"].to_numpy() for metric in selected_metrics}
+    )
+
+    if significant_only:
+        significant_mask = (pvalue_frame <= pvalue_threshold).fillna(False).any(axis=1)
+        filtered = filtered.loc[significant_mask].reset_index(drop=True)
+        value_frame = value_frame.loc[significant_mask].reset_index(drop=True)
+        pvalue_frame = pvalue_frame.loc[significant_mask].reset_index(drop=True)
+
+    return filtered, value_frame, pvalue_frame
+
+
+def editable_text_input(label: str, key: str, default: str) -> str:
+    if key not in st.session_state:
+        st.session_state[key] = default
+    return st.text_input(label, key=key)
+
+
+def build_default_text_labels(fc_cutoff: float, pvalue_threshold: float) -> dict[str, str]:
+    return {
+        "heatmap_title": "",
+        "class_strip_title": "Class",
+        "legend_title": "Classes",
+        "colorbar_title": "Log2 Fold Change",
+        "pvalue_note": f"p-value > {pvalue_threshold:g}",
+        "bin_strong_down": f"<= -{fc_cutoff:g}",
+        "bin_mild_down": f"-{fc_cutoff:g} — -0.5",
+        "bin_neutral": "-0.5 — 0.5",
+        "bin_mild_up": f"0.5 — {fc_cutoff:g}",
+        "bin_strong_up": f">= {fc_cutoff:g}",
+    }
+
+
+def sync_default_text_labels(default_text_labels: dict[str, str]) -> None:
+    tracker_key = "text_default_tracker"
+    previous_defaults = st.session_state.get(tracker_key, {})
+
+    for label_key, current_default in default_text_labels.items():
+        state_key = f"text_{label_key}"
+        previous_default = previous_defaults.get(label_key)
+        if state_key not in st.session_state or st.session_state[state_key] == previous_default:
+            st.session_state[state_key] = current_default
+
+    st.session_state[tracker_key] = default_text_labels.copy()
+
+
+def editable_mapping_editor(
+    items: list[str],
+    state_key: str,
+    source_label: str,
+    target_label: str,
+) -> dict[str, str]:
+    if state_key not in st.session_state:
+        st.session_state[state_key] = {}
+
+    mapping = st.session_state[state_key]
+    for item in items:
+        mapping.setdefault(item, item)
+
+    editor_df = pd.DataFrame(
+        {
+            source_label: items,
+            target_label: [mapping[item] for item in items],
+        }
+    )
+    edited_df = st.data_editor(
+        editor_df,
+        hide_index=True,
+        width="stretch",
+        num_rows="fixed",
+        key=f"{state_key}_editor",
+        column_config={
+            source_label: st.column_config.TextColumn(disabled=True),
+            target_label: st.column_config.TextColumn(required=True),
+        },
+    )
+
+    updated_mapping = {
+        row[source_label]: normalize_text(row[target_label]) or row[source_label]
+        for _, row in edited_df.iterrows()
+    }
+    st.session_state[state_key].update(updated_mapping)
+    return st.session_state[state_key]
+
+
+def plot_heatmap(
+    values: pd.DataFrame,
+    pvalues: pd.DataFrame,
+    pvalue_threshold: float,
+    low_cutoff: float,
+    high_cutoff: float,
+    annotate: bool,
+    text_labels: dict[str, str],
+    metric_labels: list[str],
+    drug_labels: list[str],
+    group_labels: list[str],
+) -> plt.Figure:
+    shown_values = values.copy()
+    shown_values = shown_values.where(pvalues <= pvalue_threshold, np.nan)
+
+    color_steps = ["#24557a", "#77add0", "#f2efe7", "#dd8b6b", "#7d1f1f"]
+    cmap = ListedColormap(color_steps)
+    finite_values = values.to_numpy(dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    max_abs_value = float(np.max(np.abs(finite_values))) if finite_values.size else 2.0
+    outer_limit = max(max_abs_value, abs(low_cutoff), abs(high_cutoff), 2.0) + 0.01
+    bounds = [-outer_limit, low_cutoff, -0.5, 0.5, high_cutoff, outer_limit]
+    norm = BoundaryNorm(bounds, cmap.N, clip=True)
+
+    unique_groups = list(dict.fromkeys(group_labels))
+    palette = plt.get_cmap("tab20")
+    group_to_color = {
+        group: palette(i % palette.N) for i, group in enumerate(unique_groups)
+    }
+    group_colors = [group_to_color[group] for group in group_labels]
+
+    n_rows = max(len(values), 1)
+    fig_height = max(5.5, 0.45 * n_rows + 2.5)
+    fig_width = max(11.0, 1.0 * len(values.columns) + 5.0)
+    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
+    grid = fig.add_gridspec(1, 3, width_ratios=[0.35, 5.8, 1.8], wspace=0.08)
+
+    ax_group = fig.add_subplot(grid[0, 0])
+    ax_heatmap = fig.add_subplot(grid[0, 1])
+    ax_legend = fig.add_subplot(grid[0, 2])
+
+    group_matrix = np.arange(len(group_labels)).reshape(-1, 1)
+    group_cmap = ListedColormap(group_colors or ["#cccccc"])
+    ax_group.imshow(group_matrix, aspect="auto", cmap=group_cmap)
+    ax_group.set_xticks([])
+    ax_group.set_yticks([])
+    ax_group.tick_params(left=False, bottom=False, labelleft=False)
+    ax_group.set_title(text_labels["class_strip_title"], fontsize=10, pad=10)
+    for spine in ax_group.spines.values():
+        spine.set_visible(False)
+
+    masked = np.ma.masked_invalid(shown_values.to_numpy(dtype=float))
+    cmap_with_nan = cmap.with_extremes(bad="#d9d9d9")
+    image = ax_heatmap.imshow(masked, aspect="auto", cmap=cmap_with_nan, norm=norm)
+
+    ax_heatmap.set_xticks(np.arange(len(values.columns)))
+    ax_heatmap.set_xticklabels(metric_labels, rotation=45, ha="right", fontsize=10)
+    ax_heatmap.set_yticks(np.arange(len(values.index)))
+    ax_heatmap.set_yticklabels(drug_labels, fontsize=10)
+    ax_heatmap.tick_params(length=0)
+    if text_labels["heatmap_title"]:
+        ax_heatmap.set_title(text_labels["heatmap_title"], loc="left", fontsize=16, pad=12)
+
+    ax_heatmap.set_xticks(np.arange(-0.5, len(values.columns), 1), minor=True)
+    ax_heatmap.set_yticks(np.arange(-0.5, len(values.index), 1), minor=True)
+    ax_heatmap.grid(which="minor", color="white", linestyle="-", linewidth=1)
+    for spine in ax_heatmap.spines.values():
+        spine.set_visible(False)
+
+    if annotate:
+        for row_idx in range(len(values.index)):
+            for col_idx in range(len(values.columns)):
+                raw_value = values.iloc[row_idx, col_idx]
+                pval = pvalues.iloc[row_idx, col_idx]
+                if pd.isna(raw_value):
+                    continue
+
+                text_color = "black"
+                if pd.notna(pval) and pval <= pvalue_threshold:
+                    if raw_value <= low_cutoff or raw_value >= high_cutoff:
+                        text_color = "white"
+                ax_heatmap.text(
+                    col_idx,
+                    row_idx,
+                    f"{raw_value:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=8.5,
+                    color=text_color,
+                )
+
+    fc_handles = [
+        mpatches.Patch(color=color_steps[0], label=text_labels["bin_strong_down"]),
+        mpatches.Patch(color=color_steps[1], label=text_labels["bin_mild_down"]),
+        mpatches.Patch(color=color_steps[2], label=text_labels["bin_neutral"]),
+        mpatches.Patch(color=color_steps[3], label=text_labels["bin_mild_up"]),
+        mpatches.Patch(color=color_steps[4], label=text_labels["bin_strong_up"]),
+        mpatches.Patch(color="#d9d9d9", label=text_labels["pvalue_note"]),
+    ]
+    class_handles = [
+        mpatches.Patch(color=color, label=group)
+        for group, color in group_to_color.items()
+    ]
+
+    ax_legend.axis("off")
+    fc_legend = ax_legend.legend(
+        handles=fc_handles,
+        loc="upper left",
+        title=text_labels["colorbar_title"],
+        frameon=False,
+        fontsize=9,
+        title_fontsize=10,
+    )
+    fc_legend._legend_box.align = "left"
+    fc_legend.get_title().set_ha("left")
+
+    class_legend = ax_legend.legend(
+        handles=class_handles,
+        loc="upper left",
+        bbox_to_anchor=(0, 0.45),
+        title=text_labels["legend_title"],
+        frameon=False,
+        fontsize=9,
+        title_fontsize=10,
+    )
+    class_legend._legend_box.align = "left"
+    class_legend.get_title().set_ha("left")
+    ax_legend.add_artist(fc_legend)
+
+    return fig
+
+
+def export_figure_png_bytes(fig: plt.Figure, dpi: int = 600) -> bytes:
+    buffer = BytesIO()
+    fig.savefig(
+        buffer,
+        format="png",
+        dpi=dpi,
+        bbox_inches="tight",
+        facecolor="white",
+    )
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def format_long_table(data: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
+    records: list[dict[str, object]] = []
+    for _, row in data.iterrows():
+        for metric in metrics:
+            records.append(
+                {
+                    "Class": row["group"],
+                    "Drug": row["drug"],
+                    "Metric": metric,
+                    "Log2FoldChange": row[f"{metric}__log2fc"],
+                    "p-value": row[f"{metric}__pvalue"],
+                }
+            )
+    return pd.DataFrame(records)
+
+
+def main() -> None:
+    st.set_page_config(page_title="Behavior Heatmap", layout="wide")
+    st.title("Heatmap по данным из Excel")
+    st.caption(
+        "Загрузите `.xlsx` с заданной структурой: колонка A — класс препарата, "
+        "колонка B — препарат, дальше пары `Log2Fold Change` и `p-value` для каждой метрики."
+    )
+    uploaded_file = st.file_uploader("Загрузите `.xlsx`", type=["xlsx"], key="xlsx_uploader")
+    file_bytes: bytes | None = uploaded_file.getvalue() if uploaded_file is not None else None
+
+    if not file_bytes:
+        st.stop()
+
+    try:
+        parsed = parse_workbook(file_bytes)
+    except Exception as exc:
+        st.error(
+            "Не удалось прочитать файл. Проверьте, что это `.xlsx` нужной структуры, "
+            "и попробуйте загрузить его ещё раз."
+        )
+        st.exception(exc)
+        st.stop()
+
+    data = parsed.data
+    metrics = parsed.metrics
+
+    if data.empty or not metrics:
+        st.error("Не удалось извлечь таблицу из Excel.")
+        st.stop()
+
+    groups = data["group"].dropna().unique().tolist()
+
+    with st.sidebar:
+        st.header("Настройки")
+        selected_groups = st.multiselect(
+            "Классы препаратов",
+            options=groups,
+            default=groups,
+        )
+        selected_metrics = st.multiselect(
+            "Метрики",
+            options=metrics,
+            default=metrics,
+        )
+        pvalue_threshold = st.selectbox(
+            "Порог p-value",
+            options=[0.01, 0.05],
+            index=1,
+            format_func=lambda value: f"{value:.2f}",
+        )
+        significant_only = st.checkbox(
+            "Показывать только строки, где есть хотя бы одна значимая ячейка",
+            value=False,
+        )
+        annotate = st.checkbox("Подписывать значения в ячейках", value=True)
+        fc_abs_cutoff = st.selectbox(
+            "Порог |Log2FC|",
+            options=[1.0, 0.58],
+            index=0,
+            format_func=lambda value: (
+                f"-{value:g} / +{value:g}"
+            ),
+        )
+        low_cutoff = -fc_abs_cutoff
+        high_cutoff = fc_abs_cutoff
+
+        st.divider()
+        st.subheader("Редактирование подписей")
+        default_text_labels = build_default_text_labels(fc_abs_cutoff, pvalue_threshold)
+        sync_default_text_labels(default_text_labels)
+
+        if st.button("Сбросить подписи по умолчанию", width="stretch"):
+            for key, value in default_text_labels.items():
+                st.session_state[f"text_{key}"] = value
+            st.session_state["text_default_tracker"] = default_text_labels.copy()
+
+        text_labels = {
+            key: editable_text_input(label, f"text_{key}", default_text_labels[key])
+            for key, label in [
+                ("heatmap_title", "Заголовок графика"),
+                ("class_strip_title", "Заголовок цветовой полосы классов"),
+                ("legend_title", "Заголовок легенды"),
+                ("colorbar_title", "Заголовок легенды fold change"),
+                ("pvalue_note", "Подпись для незначимых ячеек"),
+                ("bin_strong_down", "Подпись сильного снижения"),
+                ("bin_mild_down", "Подпись умеренного снижения"),
+                ("bin_neutral", "Подпись нейтральной зоны"),
+                ("bin_mild_up", "Подпись умеренного повышения"),
+                ("bin_strong_up", "Подпись сильного повышения"),
+            ]
+        }
+
+    if not selected_groups:
+        st.warning("Выберите хотя бы один класс препаратов.")
+        st.stop()
+    if not selected_metrics:
+        st.warning("Выберите хотя бы одну метрику.")
+        st.stop()
+
+    filtered_meta, value_frame, pvalue_frame = build_heatmap_frame(
+        data=data,
+        selected_groups=selected_groups,
+        selected_metrics=selected_metrics,
+        pvalue_threshold=pvalue_threshold,
+        significant_only=significant_only,
+    )
+
+    if value_frame.empty:
+        st.warning("После фильтрации не осталось данных для отображения.")
+        st.stop()
+
+    with st.expander("Редактирование текстов на графике", expanded=False):
+        metric_label_map = editable_mapping_editor(
+            items=selected_metrics,
+            state_key="metric_label_map",
+            source_label="Исходная метрика",
+            target_label="Подпись на графике",
+        )
+        group_label_map = editable_mapping_editor(
+            items=selected_groups,
+            state_key="group_label_map",
+            source_label="Исходный класс",
+            target_label="Подпись на графике",
+        )
+        drug_label_map = editable_mapping_editor(
+            items=filtered_meta["drug"].tolist(),
+            state_key="drug_label_map",
+            source_label="Исходный препарат",
+            target_label="Подпись на графике",
+        )
+
+    metric_labels = [metric_label_map.get(metric, metric) for metric in selected_metrics]
+    group_labels = [group_label_map.get(group, group) for group in filtered_meta["group"]]
+    drug_labels = [drug_label_map.get(drug, drug) for drug in filtered_meta["drug"]]
+
+    st.subheader("Heatmap")
+    fig = plot_heatmap(
+        values=value_frame,
+        pvalues=pvalue_frame,
+        pvalue_threshold=pvalue_threshold,
+        low_cutoff=low_cutoff,
+        high_cutoff=high_cutoff,
+        annotate=annotate,
+        text_labels=text_labels,
+        metric_labels=metric_labels,
+        drug_labels=drug_labels,
+        group_labels=group_labels,
+    )
+    st.pyplot(fig, width="stretch")
+
+    export_col, _ = st.columns([1, 4])
+    with export_col:
+        st.download_button(
+            "Скачать PNG (600 dpi)",
+            data=export_figure_png_bytes(fig, dpi=600),
+            file_name="behavior_heatmap_600dpi.png",
+            mime="image/png",
+            width="stretch",
+        )
+
+    summary_1, summary_2, summary_3 = st.columns(3)
+    summary_1.metric("Препаратов", len(filtered_meta))
+    summary_2.metric("Метрик", len(selected_metrics))
+    significant_cells = int((pvalue_frame <= pvalue_threshold).fillna(False).sum().sum())
+    summary_3.metric("Значимых ячеек", significant_cells)
+
+    with st.expander("Таблица значений"):
+        st.dataframe(
+            format_long_table(filtered_meta, selected_metrics),
+            width="stretch",
+            hide_index=True,
+        )
+
+
+if __name__ == "__main__":
+    main()
