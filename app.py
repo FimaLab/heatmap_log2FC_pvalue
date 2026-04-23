@@ -12,13 +12,46 @@ from matplotlib.colors import BoundaryNorm, ListedColormap, to_hex
 from openpyxl import load_workbook
 
 DEFAULT_HEATMAP_COLORS = {
-    "strong_down": "#24557a",
-    "mild_down": "#77add0",
-    "neutral": "#f2efe7",
-    "mild_up": "#dd8b6b",
-    "strong_up": "#7d1f1f",
-    "pvalue": "#d9d9d9",
+    "strong_down": "#2f8ac4",
+    "mild_down": "#cfe8f6",
+    "neutral": "#f1d783",
+    "mild_up": "#f68b63",
+    "strong_up": "#ff646b",
+    "pvalue": "#ffffff",
 }
+
+HEATMAP_COLOR_WIDGET_VERSION = "v3"
+
+DEFAULT_CLASS_COLORS = [
+    "#000eff",
+    "#bdd9ff",
+    "#ff7600",
+    "#fdc68e",
+    "#06a221",
+    "#73ff56",
+    "#ff0001",
+    "#ffa29e",
+    "#8500ff",
+    "#d197ff",
+    "#e4ff00",
+    "#ffe300",
+    "#ff00b3",
+]
+
+CLASS_COLOR_WIDGET_VERSION = "v2"
+
+DEFAULT_METRIC_GROUP_COLORS = [
+    "#98f3d5",
+    "#ffa580",
+    "#a4b5ea",
+    "#f7b2d6",
+    "#c0ea77",
+    "#ffef8e",
+    "#dc5578",
+    "#5dbdbd",
+]
+
+METRIC_GROUP_COLOR_WIDGET_VERSION = "v2"
 
 
 @dataclass
@@ -169,10 +202,10 @@ def editable_text_input(label: str, key: str, default: str) -> str:
 def build_default_text_labels(fc_cutoff: float, pvalue_threshold: float) -> dict[str, str]:
     return {
         "heatmap_title": "",
-        "class_strip_title": "Class",
-        "legend_title": "Classes",
-        "metric_group_strip_title": "Parameter group",
-        "metric_group_legend_title": "Parameter groups",
+        "class_strip_title": "Drug classes",
+        "legend_title": "Drug classes",
+        "metric_group_strip_title": "Functional groups",
+        "metric_group_legend_title": "Functional groups",
         "colorbar_title": "Log2 Fold Change",
         "pvalue_note": f"p-value > {pvalue_threshold:g}",
         "bin_strong_down": f"<= -{fc_cutoff:g}",
@@ -239,6 +272,22 @@ def build_palette_color_map(items: list[str], palette_name: str) -> dict[str, st
     palette = plt.get_cmap(palette_name)
     return {
         item: to_hex(palette(index % palette.N))
+        for index, item in enumerate(items)
+    }
+
+
+def build_ordered_color_map(
+    items: list[str],
+    colors: list[str],
+    fallback_palette_name: str,
+) -> dict[str, str]:
+    fallback_palette = plt.get_cmap(fallback_palette_name)
+    return {
+        item: (
+            colors[index]
+            if index < len(colors)
+            else to_hex(fallback_palette(index % fallback_palette.N))
+        )
         for index, item in enumerate(items)
     }
 
@@ -395,19 +444,27 @@ def plot_heatmap(
             ha="left",
             rotation_mode="anchor",
             fontsize=10,
+            fontweight="bold",
         )
         ax_heatmap.tick_params(axis="x", labeltop=True, labelbottom=False, pad=2)
     else:
-        ax_heatmap.set_xticklabels(x_labels, rotation=45, ha="right", fontsize=10)
+        ax_heatmap.set_xticklabels(
+            x_labels,
+            rotation=45,
+            ha="right",
+            fontsize=10,
+            fontweight="bold",
+        )
     ax_heatmap.set_yticks(np.arange(len(y_labels)))
-    ax_heatmap.set_yticklabels(y_labels, fontsize=10)
+    ax_heatmap.set_yticklabels(y_labels, fontsize=10, fontweight="bold")
     ax_heatmap.tick_params(length=0)
     if text_labels["heatmap_title"]:
         ax_heatmap.set_title(text_labels["heatmap_title"], loc="left", fontsize=16, pad=12)
 
     ax_heatmap.set_xticks(np.arange(-0.5, len(x_labels), 1), minor=True)
     ax_heatmap.set_yticks(np.arange(-0.5, len(y_labels), 1), minor=True)
-    ax_heatmap.grid(which="minor", color="white", linestyle="-", linewidth=1)
+    ax_heatmap.grid(which="major", visible=False)
+    ax_heatmap.grid(which="minor", color="black", linestyle="-", linewidth=1)
     for spine in ax_heatmap.spines.values():
         spine.set_visible(False)
 
@@ -526,7 +583,12 @@ def plot_heatmap(
     ax_group.set_xticks([])
     ax_group.set_yticks([])
     ax_group.tick_params(left=False, bottom=False, labelleft=False)
-    ax_group.set_title(text_labels["class_strip_title"], fontsize=10, pad=16)
+    ax_group.set_title(
+        text_labels["class_strip_title"],
+        fontsize=10,
+        pad=16,
+        fontweight="bold",
+    )
     for spine in ax_group.spines.values():
         spine.set_visible(False)
 
@@ -548,6 +610,7 @@ def plot_heatmap(
                 rotation=90,
                 labelpad=16,
                 va="center",
+                fontweight="bold",
             )
         else:
             ax_metric_group.set_xlim(ax_heatmap.get_xlim())
@@ -560,7 +623,10 @@ def plot_heatmap(
                 labelbottom=False,
             )
             ax_metric_group.set_title(
-                text_labels["metric_group_strip_title"], fontsize=10, pad=2
+                text_labels["metric_group_strip_title"],
+                fontsize=10,
+                pad=2,
+                fontweight="bold",
             )
         for spine in ax_metric_group.spines.values():
             spine.set_visible(False)
@@ -573,34 +639,71 @@ def plot_heatmap(
                 if pd.isna(raw_value):
                     continue
 
-                text_color = "black"
-                if pd.notna(pval) and pval <= pvalue_threshold:
-                    if raw_value <= low_cutoff or raw_value >= high_cutoff:
-                        text_color = "white"
                 ax_heatmap.text(
                     col_idx,
                     row_idx,
                     f"{raw_value:.2f}",
                     ha="center",
                     va="center",
-                    fontsize=8.5,
-                    color=text_color,
+                    fontsize=7.5,
+                    fontweight="bold",
+                    color="black",
                 )
 
     fc_handles = [
-        mpatches.Patch(color=color_steps[0], label=text_labels["bin_strong_down"]),
-        mpatches.Patch(color=color_steps[1], label=text_labels["bin_mild_down"]),
-        mpatches.Patch(color=color_steps[2], label=text_labels["bin_neutral"]),
-        mpatches.Patch(color=color_steps[3], label=text_labels["bin_mild_up"]),
-        mpatches.Patch(color=color_steps[4], label=text_labels["bin_strong_up"]),
-        mpatches.Patch(color=pvalue_color, label=text_labels["pvalue_note"]),
+        mpatches.Patch(
+            facecolor=color_steps[0],
+            edgecolor="black",
+            linewidth=0.5,
+            label=text_labels["bin_strong_down"],
+        ),
+        mpatches.Patch(
+            facecolor=color_steps[1],
+            edgecolor="black",
+            linewidth=0.5,
+            label=text_labels["bin_mild_down"],
+        ),
+        mpatches.Patch(
+            facecolor=color_steps[2],
+            edgecolor="black",
+            linewidth=0.5,
+            label=text_labels["bin_neutral"],
+        ),
+        mpatches.Patch(
+            facecolor=color_steps[3],
+            edgecolor="black",
+            linewidth=0.5,
+            label=text_labels["bin_mild_up"],
+        ),
+        mpatches.Patch(
+            facecolor=color_steps[4],
+            edgecolor="black",
+            linewidth=0.5,
+            label=text_labels["bin_strong_up"],
+        ),
+        mpatches.Patch(
+            facecolor=pvalue_color,
+            edgecolor="black",
+            linewidth=0.5,
+            label=text_labels["pvalue_note"],
+        ),
     ]
     class_handles = [
-        mpatches.Patch(color=color, label=group)
+        mpatches.Patch(
+            facecolor=color,
+            edgecolor="black",
+            linewidth=0.5,
+            label=group,
+        )
         for group, color in group_to_color.items()
     ]
     metric_group_handles = [
-        mpatches.Patch(color=color, label=group)
+        mpatches.Patch(
+            facecolor=color,
+            edgecolor="black",
+            linewidth=0.5,
+            label=group,
+        )
         for group, color in metric_group_to_color.items()
     ]
 
@@ -841,6 +944,7 @@ def main() -> None:
     show_metric_groups = parsed.has_metric_groups and any(metric_group_labels)
     group_labels = [group_label_map.get(group, group) for group in filtered_meta["group"]]
     drug_labels = [drug_label_map.get(drug, drug) for drug in filtered_meta["drug"]]
+    visible_groups = filtered_meta["group"].dropna().unique().tolist()
 
     with st.sidebar:
         st.divider()
@@ -850,40 +954,44 @@ def main() -> None:
                 st.color_picker(
                     text_labels["bin_strong_down"],
                     value=DEFAULT_HEATMAP_COLORS["strong_down"],
-                    key="color_heatmap_strong_down",
+                    key=f"color_heatmap_strong_down_{HEATMAP_COLOR_WIDGET_VERSION}",
                 ),
                 st.color_picker(
                     text_labels["bin_mild_down"],
                     value=DEFAULT_HEATMAP_COLORS["mild_down"],
-                    key="color_heatmap_mild_down",
+                    key=f"color_heatmap_mild_down_{HEATMAP_COLOR_WIDGET_VERSION}",
                 ),
                 st.color_picker(
                     text_labels["bin_neutral"],
                     value=DEFAULT_HEATMAP_COLORS["neutral"],
-                    key="color_heatmap_neutral",
+                    key=f"color_heatmap_neutral_{HEATMAP_COLOR_WIDGET_VERSION}",
                 ),
                 st.color_picker(
                     text_labels["bin_mild_up"],
                     value=DEFAULT_HEATMAP_COLORS["mild_up"],
-                    key="color_heatmap_mild_up",
+                    key=f"color_heatmap_mild_up_{HEATMAP_COLOR_WIDGET_VERSION}",
                 ),
                 st.color_picker(
                     text_labels["bin_strong_up"],
                     value=DEFAULT_HEATMAP_COLORS["strong_up"],
-                    key="color_heatmap_strong_up",
+                    key=f"color_heatmap_strong_up_{HEATMAP_COLOR_WIDGET_VERSION}",
                 ),
             ]
             pvalue_color = st.color_picker(
                 text_labels["pvalue_note"],
                 value=DEFAULT_HEATMAP_COLORS["pvalue"],
-                key="color_heatmap_pvalue",
+                key=f"color_heatmap_pvalue_{HEATMAP_COLOR_WIDGET_VERSION}",
             )
 
         with st.expander("Шкала Class", expanded=False):
             class_colors_by_group = editable_color_map(
-                selected_groups,
-                build_palette_color_map(selected_groups, "tab20"),
-                "color_class",
+                visible_groups,
+                build_ordered_color_map(
+                    visible_groups,
+                    DEFAULT_CLASS_COLORS,
+                    "tab20",
+                ),
+                f"color_class_{CLASS_COLOR_WIDGET_VERSION}",
                 label_map=group_label_map,
             )
 
@@ -892,8 +1000,12 @@ def main() -> None:
             with st.expander("Шкала Parameter group", expanded=False):
                 metric_group_colors_by_group = editable_color_map(
                     metric_group_names,
-                    build_palette_color_map(metric_group_names, "Set2"),
-                    "color_metric_group",
+                    build_ordered_color_map(
+                        metric_group_names,
+                        DEFAULT_METRIC_GROUP_COLORS,
+                        "Set2",
+                    ),
+                    f"color_metric_group_{METRIC_GROUP_COLOR_WIDGET_VERSION}",
                     label_map=metric_group_label_map,
                 )
 
