@@ -17,10 +17,10 @@ DEFAULT_HEATMAP_COLORS = {
     "neutral": "#f1d783",
     "mild_up": "#f68b63",
     "strong_up": "#ff646b",
-    "pvalue": "#ffffff",
+    "pvalue": "#eae9e9",
 }
 
-HEATMAP_COLOR_WIDGET_VERSION = "v3"
+HEATMAP_COLOR_WIDGET_VERSION = "v5"
 
 DEFAULT_CLASS_COLORS = [
     "#000eff",
@@ -637,6 +637,8 @@ def plot_heatmap(
                 raw_value = raw_values.iloc[row_idx, col_idx]
                 pval = plot_pvalues.iloc[row_idx, col_idx]
                 if pd.isna(raw_value):
+                    continue
+                if pd.isna(pval) or pval > pvalue_threshold:
                     continue
 
                 ax_heatmap.text(
