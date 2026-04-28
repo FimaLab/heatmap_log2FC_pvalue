@@ -48,10 +48,10 @@ DEFAULT_METRIC_GROUP_COLORS = [
     "#c0ea77",
     "#ffef8e",
     "#dc5578",
-    "#5dbdbd",
+    "#9E91FF",
 ]
 
-METRIC_GROUP_COLOR_WIDGET_VERSION = "v2"
+METRIC_GROUP_COLOR_WIDGET_VERSION = "v3"
 
 
 @dataclass
