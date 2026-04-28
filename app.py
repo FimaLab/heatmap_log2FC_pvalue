@@ -370,15 +370,18 @@ def plot_heatmap(
         label_space = max(0.75, max_drug_label_len * 0.065 + 0.35)
         strip_space = 0.22
         top_space = 0.28
+        legend_space = 1.7 if show_metric_groups else 1.35
         fig_height = max(
             5.5,
             0.45 * len(metric_labels) + 2.1 + max(0.0, label_space - 0.9),
-        )
-        fig_width = max(11.0, 0.45 * len(drug_labels) + 5.0)
+        ) + legend_space
+        fig_width = max(11.5, 0.45 * len(drug_labels) + 3.2)
         fig = plt.figure(figsize=(fig_width, fig_height))
-        heatmap_bottom = 0.08
+        legend_bottom = 0.035
+        legend_height = legend_space / fig_height
+        heatmap_bottom = legend_bottom + legend_height + 0.04
         heatmap_left = 0.22
-        heatmap_width = 0.58
+        heatmap_width = 0.72
         metric_group_width = 0.018 if show_metric_groups else 0.0
         metric_group_gap = 0.006 if show_metric_groups else 0.0
         heatmap_top = 1 - (top_space + strip_space + label_space) / fig_height
@@ -389,12 +392,7 @@ def plot_heatmap(
             [heatmap_left, heatmap_bottom, heatmap_width, heatmap_height]
         )
         ax_legend = fig.add_axes(
-            [
-                heatmap_left + heatmap_width + 0.04,
-                heatmap_bottom,
-                0.16,
-                heatmap_height,
-            ]
+            [heatmap_left, legend_bottom, heatmap_width, legend_height]
         )
         ax_group = None
         group_matrix = np.arange(len(group_labels)).reshape(1, -1)
@@ -406,28 +404,32 @@ def plot_heatmap(
         x_labels = metric_labels
         y_labels = drug_labels
         n_rows = max(len(values), 1)
-        fig_height = max(5.5, 0.45 * n_rows + 2.5)
-        fig_width = max(11.0, 1.0 * len(values.columns) + 5.0)
-        fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
-        if show_metric_groups:
-            grid = fig.add_gridspec(
-                2,
-                3,
-                height_ratios=[0.22, 5.8],
-                width_ratios=[0.35, 5.8, 1.8],
-                wspace=0.08,
-                hspace=0.03,
-            )
-            ax_metric_group = fig.add_subplot(grid[0, 1])
-            ax_group = fig.add_subplot(grid[1, 0])
-            ax_heatmap = fig.add_subplot(grid[1, 1])
-            ax_legend = fig.add_subplot(grid[:, 2])
-        else:
-            grid = fig.add_gridspec(1, 3, width_ratios=[0.35, 5.8, 1.8], wspace=0.08)
-            ax_metric_group = None
-            ax_group = fig.add_subplot(grid[0, 0])
-            ax_heatmap = fig.add_subplot(grid[0, 1])
-            ax_legend = fig.add_subplot(grid[0, 2])
+        n_cols = max(len(values.columns), 1)
+        max_metric_label_len = max((len(label) for label in metric_labels), default=1)
+        label_space = max(0.75, max_metric_label_len * 0.065 + 0.35)
+        strip_space = 0.22
+        top_space = 0.22
+        legend_space = 1.7 if show_metric_groups else 1.35
+        fig_height = max(7.0, 0.48 * n_rows + 3.1) + legend_space
+        fig_width = max(10.5, 0.46 * n_cols + 3.0)
+        fig = plt.figure(figsize=(fig_width, fig_height))
+        legend_bottom = 0.035
+        legend_height = legend_space / fig_height
+        legend_gap = 0.45 / fig_height
+        heatmap_bottom = legend_bottom + legend_height + legend_gap
+        heatmap_left = 0.22
+        heatmap_width = 0.73
+        heatmap_top = 1 - (top_space + strip_space + label_space) / fig_height
+        heatmap_height = heatmap_top - heatmap_bottom
+
+        ax_metric_group = None
+        ax_group = None
+        ax_heatmap = fig.add_axes(
+            [heatmap_left, heatmap_bottom, heatmap_width, heatmap_height]
+        )
+        ax_legend = fig.add_axes(
+            [heatmap_left, legend_bottom, heatmap_width, legend_height]
+        )
         group_matrix = np.arange(len(group_labels)).reshape(-1, 1)
         metric_group_matrix = np.arange(len(metric_group_labels)).reshape(1, -1)
 
@@ -451,10 +453,13 @@ def plot_heatmap(
         ax_heatmap.set_xticklabels(
             x_labels,
             rotation=45,
-            ha="right",
+            ha="left",
+            rotation_mode="anchor",
             fontsize=10,
             fontweight="bold",
         )
+        ax_heatmap.xaxis.tick_top()
+        ax_heatmap.tick_params(axis="x", labeltop=True, labelbottom=False, pad=2)
     ax_heatmap.set_yticks(np.arange(len(y_labels)))
     ax_heatmap.set_yticklabels(y_labels, fontsize=10, fontweight="bold")
     ax_heatmap.tick_params(length=0)
@@ -549,12 +554,7 @@ def plot_heatmap(
             [heatmap_left, strip_bottom, heatmap_width, strip_height]
         )
         ax_legend.set_position(
-            [
-                heatmap_left + heatmap_width + 0.04,
-                heatmap_bottom,
-                0.16,
-                strip_bottom + strip_height - heatmap_bottom,
-            ]
+            [heatmap_left, legend_bottom, heatmap_width, legend_height]
         )
         if show_metric_groups:
             fig.canvas.draw()
@@ -578,17 +578,130 @@ def plot_heatmap(
                     heatmap_position.height,
                 ]
             )
+    else:
+        strip_height = strip_space / fig_height
+        strip_gap = 0.025 / fig_height
+        side_strip_width = strip_space / fig_width
+        side_strip_gap = 0.025 / fig_width
+
+        def get_y_tick_label_left() -> float:
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+            tick_label_lefts = [
+                label.get_window_extent(renderer=renderer).transformed(
+                    fig.transFigure.inverted()
+                ).x0
+                for label in ax_heatmap.get_yticklabels()
+                if label.get_visible()
+            ]
+            return min(tick_label_lefts, default=ax_heatmap.get_position().x0)
+
+        label_left = get_y_tick_label_left()
+        side_strip_left = label_left - side_strip_gap - side_strip_width
+        min_side_strip_left = 0.035
+        if side_strip_left < min_side_strip_left:
+            heatmap_position = ax_heatmap.get_position()
+            shift = min_side_strip_left - side_strip_left
+            ax_heatmap.set_position(
+                [
+                    heatmap_position.x0 + shift,
+                    heatmap_position.y0,
+                    max(0.35, heatmap_position.width - shift),
+                    heatmap_position.height,
+                ]
+            )
+            label_left = get_y_tick_label_left()
+
+        heatmap_position = ax_heatmap.get_position()
+        side_strip_right = label_left - side_strip_gap
+        side_strip_left = side_strip_right - side_strip_width
+        ax_group = fig.add_axes(
+            [
+                side_strip_left,
+                heatmap_position.y0,
+                side_strip_width,
+                heatmap_position.height,
+            ]
+        )
+
+        if show_metric_groups:
+            top_margin = 0.18 / fig_height
+            max_strip_bottom = 1 - strip_height - top_margin
+
+            def get_top_tick_label_edge() -> float:
+                fig.canvas.draw()
+                renderer = fig.canvas.get_renderer()
+                tick_label_tops = [
+                    label.get_window_extent(renderer=renderer).transformed(
+                        fig.transFigure.inverted()
+                    ).y1
+                    for label in ax_heatmap.get_xticklabels()
+                    if label.get_visible()
+                ]
+                return max(tick_label_tops, default=ax_heatmap.get_position().y1)
+
+            label_top = get_top_tick_label_edge()
+            strip_bottom = label_top + strip_gap
+            if strip_bottom > max_strip_bottom:
+                heatmap_position = ax_heatmap.get_position()
+                overflow = strip_bottom - max_strip_bottom
+                new_height = max(0.25, heatmap_position.height - overflow)
+                ax_heatmap.set_position(
+                    [
+                        heatmap_position.x0,
+                        heatmap_position.y0,
+                        heatmap_position.width,
+                        new_height,
+                    ]
+                )
+                group_position = ax_group.get_position()
+                ax_group.set_position(
+                    [
+                        group_position.x0,
+                        group_position.y0,
+                        group_position.width,
+                        new_height,
+                    ]
+                )
+                label_top = get_top_tick_label_edge()
+                strip_bottom = label_top + strip_gap
+
+            strip_bottom = min(strip_bottom, max_strip_bottom)
+            heatmap_position = ax_heatmap.get_position()
+            ax_metric_group = fig.add_axes(
+                [
+                    heatmap_position.x0,
+                    strip_bottom,
+                    heatmap_position.width,
+                    strip_height,
+                ]
+            )
+
+        heatmap_position = ax_heatmap.get_position()
+        ax_legend.set_position(
+            [heatmap_position.x0, legend_bottom, heatmap_position.width, legend_height]
+        )
 
     ax_group.imshow(group_matrix, aspect="auto", cmap=group_cmap)
     ax_group.set_xticks([])
     ax_group.set_yticks([])
     ax_group.tick_params(left=False, bottom=False, labelleft=False)
-    ax_group.set_title(
-        text_labels["class_strip_title"],
-        fontsize=10,
-        pad=16,
-        fontweight="bold",
-    )
+    if is_transposed:
+        ax_group.set_title(
+            text_labels["class_strip_title"],
+            fontsize=10,
+            pad=16,
+            fontweight="bold",
+        )
+    else:
+        ax_group.set_ylabel(
+            text_labels["class_strip_title"],
+            fontsize=10,
+            rotation=90,
+            labelpad=8,
+            va="center",
+            fontweight="bold",
+        )
     for spine in ax_group.spines.values():
         spine.set_visible(False)
 
@@ -625,7 +738,7 @@ def plot_heatmap(
             ax_metric_group.set_title(
                 text_labels["metric_group_strip_title"],
                 fontsize=10,
-                pad=2,
+                pad=8,
                 fontweight="bold",
             )
         for spine in ax_metric_group.spines.values():
@@ -647,7 +760,7 @@ def plot_heatmap(
                     f"{raw_value:.2f}",
                     ha="center",
                     va="center",
-                    fontsize=7.5,
+                    fontsize=8.5 if not is_transposed else 7.5,
                     fontweight="bold",
                     color="black",
                 )
@@ -709,43 +822,63 @@ def plot_heatmap(
         for group, color in metric_group_to_color.items()
     ]
 
+    fig.canvas.draw()
+    heatmap_position = ax_heatmap.get_position()
+    legend_position = ax_legend.get_position()
+    ax_legend.set_position(
+        [
+            heatmap_position.x0,
+            legend_position.y0,
+            heatmap_position.width,
+            legend_position.height,
+        ]
+    )
     ax_legend.axis("off")
-    fc_legend = ax_legend.legend(
-        handles=fc_handles,
-        loc="upper left",
-        title=text_labels["colorbar_title"],
-        frameon=False,
-        fontsize=9,
-        title_fontsize=10,
-    )
-    fc_legend._legend_box.align = "left"
-    fc_legend.get_title().set_ha("left")
 
-    class_legend = ax_legend.legend(
-        handles=class_handles,
-        loc="upper left",
-        bbox_to_anchor=(0, 0.55 if show_metric_groups else 0.45),
-        title=text_labels["legend_title"],
-        frameon=False,
-        fontsize=9,
-        title_fontsize=10,
-    )
-    class_legend._legend_box.align = "left"
-    class_legend.get_title().set_ha("left")
-    ax_legend.add_artist(fc_legend)
-    if show_metric_groups:
-        metric_group_legend = ax_legend.legend(
-            handles=metric_group_handles,
+    def place_legend(
+        handles: list[mpatches.Patch],
+        title: str,
+        anchor_x: float,
+        columns: int = 1,
+    ) -> plt.Legend:
+        legend = ax_legend.legend(
+            handles=handles,
             loc="upper left",
-            bbox_to_anchor=(0, 0.16),
-            title=text_labels["metric_group_legend_title"],
+            bbox_to_anchor=(anchor_x, 1.0),
+            borderaxespad=0,
+            borderpad=0,
+            title=title,
             frameon=False,
             fontsize=9,
             title_fontsize=10,
+            ncol=columns,
+            columnspacing=1.0,
+            handlelength=1.7,
+            handletextpad=0.55,
+            labelspacing=0.35,
         )
-        metric_group_legend._legend_box.align = "left"
-        metric_group_legend.get_title().set_ha("left")
+        legend._legend_box.align = "left"
+        legend.get_title().set_ha("left")
+        return legend
+
+    fc_legend = place_legend(fc_handles, text_labels["colorbar_title"], 0.0)
+    ax_legend.add_artist(fc_legend)
+
+    class_columns = 2 if len(class_handles) > 6 else 1
+    class_anchor = 0.24 if show_metric_groups else 0.36
+    class_legend = place_legend(
+        class_handles,
+        text_labels["legend_title"],
+        class_anchor,
+        columns=class_columns,
+    )
+    if show_metric_groups:
         ax_legend.add_artist(class_legend)
+        metric_group_legend = place_legend(
+            metric_group_handles,
+            text_labels["metric_group_legend_title"],
+            0.62,
+        )
 
     return fig
 
@@ -840,7 +973,15 @@ def main() -> None:
             value=False,
         )
         annotate = st.checkbox("Подписывать значения в ячейках", value=True)
-        heatmap_orientation = "groups_top"
+        heatmap_orientation = st.selectbox(
+            "Ориентация",
+            options=["groups_top", "metrics_top"],
+            index=0,
+            format_func=lambda value: {
+                "groups_top": "Препараты сверху, метрики слева",
+                "metrics_top": "Метрики сверху, препараты слева",
+            }[value],
+        )
         fc_abs_cutoff = st.selectbox(
             "Порог |Log2FC|",
             options=[1.0, 0.58],
